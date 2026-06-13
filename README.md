@@ -2,6 +2,15 @@
 
 A Hitori plugin for [KOReader](https://github.com/koreader/koreader).
 
+
+## Screenshot
+
+*(Screenshot to be added.)*
+
+## Rules
+
+Shade cells black so that: no row or column has duplicate numbers among white cells; no two black cells touch orthogonally; all white cells form one connected group.
+
 ## Concept
 
 Hitori (Japanese: "leave me alone") is a logic puzzle on a square grid filled with
@@ -11,7 +20,7 @@ numbers. The goal is to blacken some cells so that:
 2. Blackened cells never share an edge.
 3. All unblackened cells form a single connected region.
 
-## Planned Features
+## Features
 
 - **Multiple grid sizes** — 5×5, 7×7, 9×9
 - **Three difficulty levels** — Easy, Medium, Hard
@@ -34,6 +43,7 @@ numbers. The goal is to blacken some cells so that:
 | New game | Tap **New game** |
 | Change grid size | Tap **Grid** |
 | Change difficulty | Tap **Diff** |
+| Show rules | Tap **Rules** |
 
 ## Why e-ink friendly?
 
