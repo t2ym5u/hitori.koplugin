@@ -16,7 +16,7 @@ local Size            = require("ui/size")
 local UIManager       = require("ui/uimanager")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local VerticalSpan    = require("ui/widget/verticalspan")
-local _               = require("gettext")
+local _               = require("i18n")
 local T               = require("ffi/util").template
 
 local ScreenBase         = require("screen_base")
@@ -41,7 +41,7 @@ Shade some cells black so that the remaining white cells satisfy three rules:
 2. No two black cells touch each other orthogonally (diagonal touching is allowed).
 3. All white cells form one single orthogonally connected group.
 
-Tap a cell to shade it black. Tap again to unshade. The puzzle is solved when all three rules are met.
+Tap a cell to cycle: Unknown → Black → White-dot → Unknown. Hold to reset to Unknown.
 ]])
 
 local GAME_RULES_FR = [[
@@ -53,7 +53,7 @@ Noircissez certaines cases de façon à ce que les cases blanches restantes sati
 2. Deux cases noires ne peuvent pas se toucher orthogonalement (le contact en diagonale est autorisé).
 3. Toutes les cases blanches forment un seul groupe orthogonalement connecté.
 
-Appuyez sur une case pour la noircir. Appuyez à nouveau pour la dénoircir.
+Appuyez sur une case pour cycler : Inconnu → Noir → Point blanc → Inconnu. Restez appuyé pour remettre à Inconnu.
 ]]
 
 local HitoriScreen = ScreenBase:extend{}
@@ -133,7 +133,6 @@ function HitoriScreen:buildLayout()
                 { text = _("Check"),  callback = function() self:onCheck() end },
                 { id = "undo_button", text = _("Undo"),
                   callback = function() self:onUndo() end },
-                { text = _("Rules"),  callback = function() self:showRulesHint() end },
             },
         },
     }
@@ -156,18 +155,13 @@ function HitoriScreen:buildLayout()
             right_panel,
         }
     else
-        self.layout = VerticalGroup:new{
+        local content = VerticalGroup:new{
             align = "center",
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            top_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
             board_frame,
             VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
         }
+        self:buildPortraitLayout(top_buttons, content, bottom_buttons)
     end
     self[1] = self.layout
     self:updateStatus()
@@ -247,16 +241,6 @@ function HitoriScreen:toggleSolution()
         self.reveal_button:setText(self:getRevealButtonText(), self.reveal_button.width)
     end
     self:updateStatus()
-end
-
-function HitoriScreen:showRulesHint()
-    self:showMessage(_(
-        "1. No number repeats in any row or column (among non-black cells).\n" ..
-        "2. No two black cells may touch orthogonally.\n" ..
-        "3. All non-black cells must form one connected region.\n\n" ..
-        "Tap: cycle Unknown → Black → White-dot → Unknown\n" ..
-        "Hold: reset to Unknown"
-    ), 8)
 end
 
 -- ---------------------------------------------------------------------------
