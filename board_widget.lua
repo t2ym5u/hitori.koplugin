@@ -1,14 +1,23 @@
+local _dir = debug.getinfo(1, "S").source:sub(2):match("(.*[/\\])") or "./"
+local function lrequire(name)
+    local key = _dir .. name
+    if not package.loaded[key] then
+        package.loaded[key] = assert(loadfile(_dir .. name .. ".lua"))()
+    end
+    return package.loaded[key]
+end
+
 local Blitbuffer = require("ffi/blitbuffer")
 local Geom       = require("ui/geometry")
 local RenderText = require("ui/rendertext")
 local Size       = require("ui/size")
 
-local gwb            = require("grid_widget_base")
+local gwb            = lrequire("common/grid_widget_base")
 local GridWidgetBase = gwb.GridWidgetBase
 local drawLine       = gwb.drawLine
 local drawDiagonalLine = gwb.drawDiagonalLine
 
-local HitoriBoard = require("board")
+local HitoriBoard = lrequire("board")
 
 local C_BG        = Blitbuffer.COLOR_WHITE
 local C_BLACK_BG  = Blitbuffer.COLOR_BLACK
