@@ -21,8 +21,8 @@ local HitoriBoard = lrequire("board")
 
 local C_BG        = Blitbuffer.COLOR_WHITE
 local C_BLACK_BG  = Blitbuffer.COLOR_BLACK
-local C_DUP_BG    = Blitbuffer.COLOR_GRAY_C
-local C_WRONG_BG  = Blitbuffer.COLOR_GRAY_A
+local C_DUP_BG    = Blitbuffer.COLOR_LIGHT_GRAY
+local C_WRONG_BG  = Blitbuffer.COLOR_GRAY
 local C_LINE      = Blitbuffer.COLOR_BLACK
 local C_NUM_DARK  = Blitbuffer.COLOR_BLACK
 local C_NUM_WHITE = Blitbuffer.COLOR_WHITE
