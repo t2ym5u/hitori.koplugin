@@ -1,5 +1,6 @@
 local UndoStack  = require("undo_stack")
 local grid_utils = require("grid_utils")
+local Hint      = require("hint")
 
 local emptyGrid     = grid_utils.emptyGrid
 local emptyBoolGrid = grid_utils.emptyBoolGrid
@@ -612,6 +613,18 @@ end
 -- ---------------------------------------------------------------------------
 -- Persistence
 -- ---------------------------------------------------------------------------
+
+-- isSolved() requires every cell decided, so white dots are offered too, not
+-- just the blacks.
+Hint.install(HitoriBoard, {
+    getUser     = function(b, r, c) return b.user[r][c] end,
+    getSolution = function(b, r, c)
+        return b.solution_black[r][c] and STATE_BLACK or STATE_WHITE_DOT
+    end,
+    isEmpty     = function(v) return v == STATE_UNKNOWN end,
+    setCell     = function(b, r, c, v) return b:setCellState(r, c, v) end,
+    blank       = STATE_UNKNOWN,
+})
 
 function HitoriBoard:serialize()
     local n = self.n
