@@ -27,6 +27,7 @@ numbers. The goal is to blacken some cells so that:
 - **Cell states** — white (keep), black (eliminate), circled (confirmed keep)
 - **Constraint highlighting** — tap a number to highlight its duplicates
 - **Check** — verifies all three rules and highlights violations
+- **Hint** — two taps: the first says which cell is about to give, the second acts on it. A cell that contradicts the solution is always reported before a fresh one is revealed
 - **Reveal solution** — shows the full solution
 - **Undo** — step back through your moves
 - **Auto-save** — game state saved and restored on next launch
