@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1] - 2026-10-30
+
+### Fixed
+- The X that Check puts on a wrongly shaded cell is now white: it was drawn
+  black on the cell's black background, so it could not be seen.
+
 ## [1.4.0] - 2026-10-30
 
 ### Added

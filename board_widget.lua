@@ -155,13 +155,15 @@ function HitoriBoardWidget:paintTo(bb, x, y)
                     ring_r, C_DOT_RING, ring_w)
             end
 
-            -- Wrong mark: X overlay
+            -- Wrong mark: X overlay. A wrongly shaded cell keeps its black
+            -- background, so its X is white, or it would not show at all.
             if not show_sol and self.board.wrong_marks[r][c] then
                 local padding   = math.max(1, math.floor(cell * 0.12))
                 local diag_len  = math.max(0, math.floor(cell - padding * 2))
                 local thickness = math.max(1, math.floor(cell / 18))
-                drawDiagonalLine(bb, cx + padding, cy + padding,      diag_len, 1,  1, C_LINE, thickness)
-                drawDiagonalLine(bb, cx + padding, cy + ch - padding, diag_len, 1, -1, C_LINE, thickness)
+                local x_color   = state == HitoriBoard.STATE_BLACK and C_NUM_WHITE or C_LINE
+                drawDiagonalLine(bb, cx + padding, cy + padding,      diag_len, 1,  1, x_color, thickness)
+                drawDiagonalLine(bb, cx + padding, cy + ch - padding, diag_len, 1, -1, x_color, thickness)
             end
         end
     end
