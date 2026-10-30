@@ -106,8 +106,11 @@ function HitoriBoardWidget:paintTo(bb, x, y)
 
     for i = 0, n do
         local lw = (i == 0 or i == n) and thick or thin
-        drawLine(bb, x + math.floor(i * cell), y, lw, self.dimen.h, C_LINE)
-        drawLine(bb, x, y + math.floor(i * cell), self.dimen.w, lw, C_LINE)
+        -- The closing line sits inside the widget: drawn at i * cell it
+        -- would spill lw - 1 pixels past the right and bottom edges.
+        local off = (i == n) and (self.dimen.w - lw) or math.floor(i * cell)
+        drawLine(bb, x + off, y, lw, self.dimen.h, C_LINE)
+        drawLine(bb, x, y + off, self.dimen.w, lw, C_LINE)
     end
 
     -- -----------------------------------------------------------------------
@@ -142,17 +145,14 @@ function HitoriBoardWidget:paintTo(bb, x, y)
             local text_x   = cx + cell_padding + math.floor((cell_inner - text_w) / 2)
             RenderText:renderUtf8Text(bb, text_x, baseline, self.number_face, text, true, false, color)
 
-            -- White-dot ring: small circle outline in corner
+            -- White mark: a ring around the number (the usual Hitori
+            -- "circled" notation). A small ring in the corner used to sit
+            -- on top of the digit once the font filled the cell.
             if not show_sol and state == HitoriBoard.STATE_WHITE_DOT then
-                local dot_r = math.max(2, math.floor(cell * 0.12))
-                local dot_x = cx + cw - dot_r - math.max(2, math.floor(cell * 0.08))
-                local dot_y = cy + dot_r + math.max(2, math.floor(cell * 0.08))
-                -- Draw a small filled circle then a slightly smaller inner circle to make a ring
-                bb:paintCircle(dot_x, dot_y, dot_r, C_DOT_RING)
-                local inner_r = math.max(0, dot_r - math.max(1, math.floor(dot_r * 0.45)))
-                if inner_r > 0 then
-                    bb:paintCircle(dot_x, dot_y, inner_r, C_BG)
-                end
+                local ring_r = math.floor(cell * 0.44)
+                local ring_w = math.max(2, math.floor(cell / 20))
+                bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2),
+                    ring_r, C_DOT_RING, ring_w)
             end
 
             -- Wrong mark: X overlay

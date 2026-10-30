@@ -7,8 +7,6 @@ local function lrequire(name)
     return package.loaded[key]
 end
 
-local ButtonTable     = require("ui/widget/buttontable")
-local Device          = require("device")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
@@ -23,8 +21,6 @@ local ScreenBase         = require("screen_base")
 local MenuHelper         = require("menu_helper")
 local HitoriBoard        = lrequire("board")
 local HitoriBoardWidget  = lrequire("board_widget")
-
-local DeviceScreen = Device.screen
 
 local GRID_SIZES = { 5, 7 }
 
@@ -82,29 +78,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function HitoriScreen:buildLayout()
-    local sw           = DeviceScreen:getWidth()
     local is_landscape = self:isLandscape()
-
-    self.board_widget = HitoriBoardWidget:new{
-        board        = self.board,
-        onCellAction = function(r, c, is_hold)
-            self:onCellAction(r, c, is_hold)
-        end,
-    }
-
-    local board_frame = FrameContainer:new{
-        padding = Size.padding.large,
-        margin  = Size.margin.default,
-        self.board_widget,
-    }
-
-    local board_frame_size  = self.board_widget.size + (Size.padding.large + Size.margin.default) * 2
-    local right_panel_width = sw - board_frame_size - Size.span.horizontal_default
-    local button_width = is_landscape
-        and math.max(right_panel_width - Size.span.horizontal_default, 100)
-        or  math.floor(sw * 0.9)
-
-    self.status_text:setMaxWidth(is_landscape and button_width or board_frame_size)
 
     local title_bar = self:buildTitleBar(_("Hitori"), function()
         return {
@@ -116,43 +90,52 @@ function HitoriScreen:buildLayout()
         }
     end)
 
-    local bottom_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = button_width,
-        buttons = {
-            {
-                { text = _("Check"),  callback = function() self:onCheck() end },
-                { text = _("Hint"), callback = function() self:onHint() end },
-                { id = "undo_button", text = _("Undo"),
-                  callback = function() self:onUndo() end },
-            },
-        },
+    -- Controls first: the board is sized from whatever room they leave.
+    self.status_text:setMaxWidth(self:getControlsWidth())
+    local action_bar = self:buildActionBar({
+        { text = _("Check"),  callback = function() self:onCheck() end },
+        { text = _("Hint"), callback = function() self:onHint() end },
+        { id = "undo_button", text = _("Undo"),
+          callback = function() self:onUndo() end },
+    })
+    self.undo_button = action_bar:getButtonById("undo_button")
+    local controls = VerticalGroup:new{
+        align = "center",
+        self.status_text,
+        VerticalSpan:new{ width = Size.span.vertical_large },
+        action_bar,
     }
-    self.undo_button = bottom_buttons:getButtonById("undo_button")
+
+    -- The widget draws its own thick outer border, so the frame only pads.
+    local frame_pad   = Size.padding.large
+    local frame_extra = 2 * frame_pad
+    local budget_w, budget_h = self:getBoardBudget(title_bar, controls)
+    self.board_widget = HitoriBoardWidget:new{
+        board        = self.board,
+        max_size     = math.min(budget_w, budget_h) - frame_extra,
+        onCellAction = function(r, c, is_hold)
+            self:onCellAction(r, c, is_hold)
+        end,
+    }
+    local board_frame = FrameContainer:new{
+        padding    = frame_pad,
+        margin     = 0,
+        bordersize = 0,
+        self.board_widget,
+    }
     self:_updateUndoButton()
 
     if is_landscape then
-        local right_panel = VerticalGroup:new{
-            align = "center",
-            self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-        }
         local content = HorizontalGroup:new{
             align = "center",
             board_frame,
-            HorizontalSpan:new{ width = Size.span.horizontal_default },
-            right_panel,
+            HorizontalSpan:new{ width = self:getGutter() },
+            controls,
         }
         self:buildLandscapeLayout(title_bar, content)
     else
-        local content = VerticalGroup:new{
-            align = "center",
-            board_frame,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            self.status_text,
-        }
-        self:buildPortraitLayout(title_bar, content, bottom_buttons)
+        self:buildPortraitLayout(title_bar, board_frame,
+            VerticalGroup:new{ align = "center", controls, VerticalSpan:new{ width = self:getGutter() } })
     end
     self:updateStatus()
 end
@@ -177,6 +160,7 @@ function HitoriScreen:onCellAction(r, c, is_hold)
     else
         self:updateStatus()
     end
+    self:refreshActionBar()
 end
 
 -- ---------------------------------------------------------------------------
@@ -195,7 +179,8 @@ function HitoriScreen:onNewGame()
 end
 
 function HitoriScreen:onUndo()
-    local ok, msg = self.board:undo()
+    -- The board's `undo` field (its UndoStack) shadows the :undo() method.
+    local ok, msg = HitoriBoard.undo(self.board)
     if ok then
         self.last_check_result = nil
         self.plugin:saveState(self.board:serialize())
@@ -205,6 +190,17 @@ function HitoriScreen:onUndo()
     else
         self:updateStatus(msg)
     end
+    self:refreshActionBar()
+end
+
+function HitoriScreen:isRoundOver()
+    return self.board:isSolved()
+end
+
+-- A hint can place the last cell, so the round may end here.
+function HitoriScreen:onHint()
+    ScreenBase.onHint(self)
+    self:refreshActionBar()
 end
 
 function HitoriScreen:onCheck()
@@ -246,7 +242,7 @@ function HitoriScreen:openGridMenu()
         }
     end
     MenuHelper.openSizeMenu{
-        title     = _("Select grid size"),
+        title     = _("Select size"),
         sizes     = sizes,
         current   = self.plugin:getSetting("grid_n", 5),
         parent    = self,
@@ -293,8 +289,8 @@ function HitoriScreen:updateStatus(msg)
         local remaining = self.board:getRemainingCells()
         local diff      = self.plugin:getSetting("difficulty", "easy")
         local label     = MenuHelper.DIFFICULTY_LABELS[diff] or diff
-        status = T(_("%1\xC3\x97%2 \xC2\xB7 %3 \xC2\xB7 Unknown: %4"),
-            self.board.n, self.board.n, label, remaining)
+        status = self:joinStatus(
+            T("%1×%1", self.board.n), label, T(_("Unknown: %1"), remaining))
     end
     ScreenBase.updateStatus(self, status)
 end
@@ -304,17 +300,17 @@ end
 -- ---------------------------------------------------------------------------
 
 function HitoriScreen:getGridButtonText()
-    return T(_("Grid: %1"), self.board.n .. "\xC3\x97" .. self.board.n)
+    return T(_("Size: %1"), self.board.n .. "\xC3\x97" .. self.board.n)
 end
 
 function HitoriScreen:getDiffButtonText()
     local diff  = self.plugin:getSetting("difficulty", "easy")
     local label = MenuHelper.DIFFICULTY_LABELS[diff] or diff
-    return T(_("Diff: %1"), label)
+    return T(_("Difficulty: %1"), label)
 end
 
 function HitoriScreen:getRevealButtonText()
-    return self.board:isShowingSolution() and _("Hide result") or _("Show result")
+    return self.board:isShowingSolution() and _("Hide solution") or _("Show solution")
 end
 
 function HitoriScreen:_updateUndoButton()
