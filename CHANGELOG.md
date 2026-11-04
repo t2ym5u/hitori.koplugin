@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-04
+
+### Changed
+- Much faster puzzle generation: 7×7 Easy took up to 2.9 s on a desktop
+  (over a minute on an e-reader); it now takes a few hundredths of a
+  second (under a second on a Kobo). The uniqueness check deduces forced
+  cells (neighbours of a black cell, duplicates of a white one, cells
+  that keep the white area connected) instead of checking each row only
+  once complete. Puzzles are the same as before for the same seed, except
+  the few the old check gave up on.
+- A "Generating puzzle…" bar appears if generation still takes a moment
+  (needs game-common 1.12.0).
+
 ## [1.4.4] - 2026-11-03
 
 ### Changed
