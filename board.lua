@@ -26,47 +26,55 @@ local DENSITY = { easy = 0.15, medium = 0.22, hard = 0.28 }
 local MAX_DENSITY          = 0.5
 local DENSITY_STEP         = 0.04
 local ATTEMPTS_PER_DENSITY = 25
-local UNIQUENESS_NODE_BUDGET = 300000
+-- Search nodes per uniqueness check (running out counts as "not unique"):
+-- with propagation every candidate settles in under 25 nodes (measured on
+-- 1,500 7x7 checks), so this is only a safety cap.
+local UNIQUENESS_NODE_BUDGET = 5000
 
 -- ---------------------------------------------------------------------------
 -- Connectivity check (DFS over non-black cells)
 -- ---------------------------------------------------------------------------
 
+-- Scratch space reused across calls (generation calls this once per
+-- black cell placed, a few thousand times per 7x7 puzzle): a visit stamp
+-- per cell and an explicit stack of row/column pairs, no tables per cell.
+local conn_seen, conn_stamp, conn_stack = {}, 0, {}
+
 local function isConnected(black, n)
     local start_r, start_c
+    local total_white = 0
     for r = 1, n do
+        local row = black[r]
         for c = 1, n do
-            if not black[r][c] then
-                start_r, start_c = r, c
-                break
+            if not row[c] then
+                total_white = total_white + 1
+                if not start_r then start_r, start_c = r, c end
             end
         end
-        if start_r then break end
     end
     if not start_r then return true end
 
-    local visited = {}
-    for r = 1, n do visited[r] = {} end
-    local stack = { { start_r, start_c } }
-    visited[start_r][start_c] = true
-    local count = 1
-    while #stack > 0 do
-        local cell = table.remove(stack)
-        local r, c = cell[1], cell[2]
-        for _, d in ipairs({ { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } }) do
-            local nr, nc = r + d[1], c + d[2]
-            if nr >= 1 and nr <= n and nc >= 1 and nc <= n
-                and not black[nr][nc] and not visited[nr][nc] then
-                visited[nr][nc] = true
-                count = count + 1
-                stack[#stack + 1] = { nr, nc }
+    conn_stamp = conn_stamp + 1
+    local stamp, seen, stack = conn_stamp, conn_seen, conn_stack
+    seen[start_r * 64 + start_c] = stamp
+    stack[1], stack[2] = start_r, start_c
+    local top, count = 2, 1
+    while top > 0 do
+        local r, c = stack[top - 1], stack[top]
+        top = top - 2
+        for k = 1, 4 do
+            local nr, nc = r, c
+            if k == 1 then nr = r - 1 elseif k == 2 then nr = r + 1
+            elseif k == 3 then nc = c - 1 else nc = c + 1 end
+            if nr >= 1 and nr <= n and nc >= 1 and nc <= n and not black[nr][nc] then
+                local key = nr * 64 + nc
+                if seen[key] ~= stamp then
+                    seen[key] = stamp
+                    count = count + 1
+                    stack[top + 1], stack[top + 2] = nr, nc
+                    top = top + 2
+                end
             end
-        end
-    end
-    local total_white = 0
-    for r = 1, n do
-        for c = 1, n do
-            if not black[r][c] then total_white = total_white + 1 end
         end
     end
     return count == total_white
@@ -216,104 +224,182 @@ end
 -- Uniqueness check
 -- ---------------------------------------------------------------------------
 
--- Shading-CSP counter (up to `limit` solutions): for each cell (processed
--- row-major), decide shaded/unshaded, pruning on (a) no 2 adjacent shaded,
--- (b) no duplicate value left unshaded in a completed row, (c) same for
--- completed columns, (d) full connectivity of unshaded cells, checked once
--- the grid is fully decided. Returns (solutions_found, exhausted);
--- exhausted=true means node_budget was hit before the search concluded, so
--- the count isn't proof. Mirrors sudokukiller.koplugin/board.lua's
--- countCageSolutions.
+-- Shading-CSP counter (up to `limit` solutions) for Hitori's rules: no
+-- value twice among a row's or a column's unshaded cells, no two shaded
+-- cells side by side, unshaded cells all connected. Returns
+-- (solutions_found, exhausted); exhausted=true means node_budget was hit
+-- before the search concluded, so the count isn't proof.
+--
+-- Backtracking with propagation to a fixpoint at every node; each rule
+-- only forces what every solution extending the current grid shares, so
+-- solutions are counted exactly:
+--   - a shaded cell's neighbours are unshaded;
+--   - an unshaded cell shades every other cell of its row and column
+--     holding the same value;
+--   - connectivity: undecided cells that can no longer reach the unshaded
+--     cells (through non-shaded cells) are shaded; an undecided cell
+--     whose shading would cut the unshaded cells apart is unshaded; an
+--     unshaded cell already cut off is a dead end.
+-- It branches on an undecided cell that still shares its value with
+-- another non-shaded cell of its row or column, else on any undecided
+-- cell (shading a cell isn't limited to duplicates by the rules above).
+-- Cell state: 0 undecided, 1 shaded, 2 unshaded. node_budget counts search
+-- nodes, so a seed gives the same verdict on every device.
+-- 1.5.0: replaces a row-major backtracker that checked a row or column
+-- only once complete and connectivity only at the end (up to 2.9 s per
+-- 7x7 puzzle on a desktop, over a minute on an e-reader).
 local function countSolutions(puzzle, n, limit, node_budget)
-    local shaded = {}
-    for r = 1, n do shaded[r] = {} end
-    local solutions, nodes, exhausted = 0, 0, false
-
-    local function rowComplete(r) for c = 1, n do if shaded[r][c] == nil then return false end end return true end
-    local function colComplete(c) for r = 1, n do if shaded[r][c] == nil then return false end end return true end
-
-    local function checkRow(r)
-        local seen = {}
-        for c = 1, n do
-            if not shaded[r][c] then
-                local v = puzzle[r][c]
-                if seen[v] then return false end
-                seen[v] = true
-            end
+    local N = n * n
+    local val, nbr, peers = {}, {}, {}
+    for r = 1, n do for c = 1, n do
+        local i = (r - 1) * n + c
+        val[i] = puzzle[r][c]
+        local l = {}
+        if r > 1 then l[#l + 1] = i - n end
+        if r < n then l[#l + 1] = i + n end
+        if c > 1 then l[#l + 1] = i - 1 end
+        if c < n then l[#l + 1] = i + 1 end
+        nbr[i] = l
+    end end
+    -- peers[i]: the other cells of i's row and column with the same value
+    for r = 1, n do for c = 1, n do
+        local i = (r - 1) * n + c
+        local p = {}
+        for cc = 1, n do
+            local j = (r - 1) * n + cc
+            if cc ~= c and val[j] == val[i] then p[#p + 1] = j end
         end
+        for rr = 1, n do
+            local j = (rr - 1) * n + c
+            if rr ~= r and val[j] == val[i] then p[#p + 1] = j end
+        end
+        peers[i] = p
+    end end
+
+    local state = {}
+    for i = 1, N do state[i] = 0 end
+    local trail, tn = {}, 0
+    local changed = false
+    local function set(i, v)
+        local s = state[i]
+        if s == v then return true end
+        if s ~= 0 then return false end
+        state[i] = v
+        tn = tn + 1; trail[tn] = i
+        changed = true
         return true
     end
-    local function checkCol(c)
-        local seen = {}
-        for r = 1, n do
-            if not shaded[r][c] then
-                local v = puzzle[r][c]
-                if seen[v] then return false end
-                seen[v] = true
-            end
-        end
-        return true
+    local function undo(mark)
+        while tn > mark do state[trail[tn]] = 0; trail[tn] = nil; tn = tn - 1 end
     end
 
-    local function isFullyConnected()
-        local start_r, start_c, total_unshaded = nil, nil, 0
-        for r = 1, n do for c = 1, n do
-            if not shaded[r][c] then
-                total_unshaded = total_unshaded + 1
-                if not start_r then start_r, start_c = r, c end
-            end
-        end end
-        if total_unshaded == 0 then return true end
-        local visited = {}
-        for r = 1, n do visited[r] = {} end
-        local stack = { { start_r, start_c } }
-        visited[start_r][start_c] = true
-        local count = 1
-        local dirs = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } }
-        while #stack > 0 do
-            local cur = table.remove(stack)
-            for _, d in ipairs(dirs) do
-                local nr, nc = cur[1] + d[1], cur[2] + d[2]
-                if nr >= 1 and nr <= n and nc >= 1 and nc <= n and not shaded[nr][nc] and not visited[nr][nc] then
-                    visited[nr][nc] = true
-                    count = count + 1
-                    stack[#stack + 1] = { nr, nc }
+    local function localProp()
+        for i = 1, N do
+            local s = state[i]
+            if s == 1 then
+                for _, j in ipairs(nbr[i]) do
+                    if not set(j, 2) then return false end
+                end
+            elseif s == 2 then
+                for _, j in ipairs(peers[i]) do
+                    if not set(j, 1) then return false end
                 end
             end
         end
-        return count == total_unshaded
+        return true
     end
 
-    local cells = {}
-    for r = 1, n do for c = 1, n do cells[#cells + 1] = { r = r, c = c } end end
+    -- Articulation points of the non-shaded cells (Tarjan, from a white
+    -- cell): an undecided cell whose DFS subtree below it holds white
+    -- cells that can't get around it is the only link to them.
+    local disc, low, timer, base = {}, {}, 0, 1
+    for i = 1, N do disc[i] = 0 end
+    local must_white = {}
+    local function dfs(i, parent)
+        timer = timer + 1
+        disc[i], low[i] = timer, timer
+        local whites = state[i] == 2 and 1 or 0
+        for _, j in ipairs(nbr[i]) do
+            if state[j] ~= 1 then
+                if disc[j] < base then
+                    local below = dfs(j, i)
+                    whites = whites + below
+                    if low[j] < low[i] then low[i] = low[j] end
+                    if low[j] >= disc[i] and below > 0 and state[i] == 0 then
+                        must_white[#must_white + 1] = i
+                    end
+                elseif j ~= parent and disc[j] < low[i] then
+                    low[i] = disc[j]
+                end
+            end
+        end
+        return whites
+    end
 
-    local function search(idx)
-        if solutions >= limit or exhausted then return end
+    local function connectProp()
+        local start, whites = nil, 0
+        for i = 1, N do
+            if state[i] == 2 then
+                whites = whites + 1
+                start = start or i
+            end
+        end
+        if not start then return true end
+        base = timer + 1
+        for k = #must_white, 1, -1 do must_white[k] = nil end
+        if dfs(start, nil) ~= whites then return false end
+        for i = 1, N do
+            if state[i] == 0 and disc[i] < base then
+                if not set(i, 1) then return false end
+            end
+        end
+        for _, i in ipairs(must_white) do
+            if not set(i, 2) then return false end
+        end
+        return true
+    end
+
+    local function propagate()
+        repeat
+            changed = false
+            if not localProp() or not connectProp() then return false end
+        until not changed
+        return true
+    end
+
+    local function pick()
+        local any
+        for i = 1, N do
+            if state[i] == 0 then
+                any = any or i
+                for _, j in ipairs(peers[i]) do
+                    if state[j] ~= 1 then return i end
+                end
+            end
+        end
+        return any
+    end
+
+    local solutions, nodes, exhausted = 0, 0, false
+    local function search()
         nodes = nodes + 1
         if nodes > node_budget then exhausted = true; return end
-        if idx > #cells then
-            if isFullyConnected() then solutions = solutions + 1 end
+        if not propagate() then return end
+        local i = pick()
+        if not i then
+            solutions = solutions + 1  -- every rule holds once all is decided
             return
         end
-        local cell = cells[idx]
-        local r, c = cell.r, cell.c
-        for _, choice in ipairs({ false, true }) do
-            local ok = true
-            if choice then
-                if (r > 1 and shaded[r - 1][c]) or (c > 1 and shaded[r][c - 1]) then ok = false end
-            end
-            if ok then
-                shaded[r][c] = choice
-                if rowComplete(r) and not checkRow(r) then ok = false end
-                if ok and colComplete(c) and not checkCol(c) then ok = false end
-                if ok then search(idx + 1) end
-                shaded[r][c] = nil
-            end
+        for v = 1, 2 do
+            local mark = tn
+            set(i, v)
+            search()
+            undo(mark)
             if solutions >= limit or exhausted then return end
         end
     end
-    search(1)
-    return solutions, exhausted
+    search()
+    return solutions, exhausted, nodes
 end
 
 -- ---------------------------------------------------------------------------
@@ -350,8 +436,11 @@ end
 -- above. So this escalates density in bounded steps, trying several random
 -- black-patterns + number-assignments per step, until one is proven
 -- unique.
-function HitoriBoard:generate(difficulty)
+-- on_progress(fraction), optional: called after every uniqueness check
+-- (screen.lua wires it to the shared "Generating puzzle…" bar).
+function HitoriBoard:generate(difficulty, on_progress)
     self.difficulty     = difficulty or self.difficulty
+    local checks = 0
     self.reveal_solution = false
     self.undo:clear()
 
@@ -368,6 +457,8 @@ function HitoriBoard:generate(difficulty)
                 assignBlackNumbers(black, puzzle, n)
                 if not best_black then best_black, best_puzzle = black, puzzle end
                 local solutions, exhausted = countSolutions(puzzle, n, 2, UNIQUENESS_NODE_BUDGET)
+                checks = checks + 1
+                if on_progress then on_progress(checks / (checks + 40)) end
                 if not exhausted and solutions == 1 then
                     self.puzzle         = puzzle
                     self.solution_black = black
@@ -688,5 +779,8 @@ end
 HitoriBoard.STATE_UNKNOWN   = STATE_UNKNOWN
 HitoriBoard.STATE_BLACK     = STATE_BLACK
 HitoriBoard.STATE_WHITE_DOT = STATE_WHITE_DOT
+
+-- exposed for the specs
+HitoriBoard.countSolutions = countSolutions
 
 return HitoriBoard

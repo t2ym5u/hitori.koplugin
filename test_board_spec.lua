@@ -216,4 +216,45 @@ describe("HitoriBoard", function()
             assert.is_false(b:load({ puzzle = {} }))
         end)
     end)
+    describe("uniqueness check (1.5.0)", function()
+        it("counts the shadings of small grids", function()
+            -- no duplicates: unshaded, or any single cell shaded
+            assert.are.equal(5, (Board.countSolutions({ { 1, 2 }, { 2, 1 } }, 2, 100, 1e6)))
+            -- only shading the shared corner clears both duplicates
+            assert.are.equal(1, (Board.countSolutions({ { 1, 1 }, { 2, 1 } }, 2, 100, 1e6)))
+        end)
+
+        it("every generated puzzle is unique, and generation is fast", function()
+            for _, n in ipairs({ 5, 7 }) do
+                for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                    local worst = 0
+                    for seed = 1, 8 do
+                        math.randomseed(seed * 7919 + n)
+                        local t0 = os.clock()
+                        local b = Board:new{ n = n }
+                        b:generate(diff)
+                        worst = math.max(worst, os.clock() - t0)
+                        local solutions, exhausted = Board.countSolutions(b.puzzle, n, 2, 1e6)
+                        assert.is_false(exhausted)
+                        assert.are.equal(1, solutions,
+                            ("n=%d diff=%s seed=%d: not unique"):format(n, diff, seed))
+                    end
+                    -- ~35 ms worst on a desktop (2.9 s before 1.5.0);
+                    -- generous for slow CI.
+                    assert.is_true(worst < 1.5, ("n=%d diff=%s took %.2fs"):format(n, diff, worst))
+                end
+            end
+        end)
+
+        it("reports progress while generating", function()
+            local calls, last = 0, 0
+            math.randomseed(3)
+            Board:new{ n = 7 }:generate("easy", function(f)
+                calls = calls + 1
+                assert.is_true(f >= last and f <= 1)
+                last = f
+            end)
+            assert.is_true(calls > 0)
+        end)
+    end)
 end)

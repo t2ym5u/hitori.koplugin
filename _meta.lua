@@ -2,5 +2,5 @@ local _ = require("gettext")
 return {
     fullname    = _("Hitori"),
     description = _("Blacken cells so no number repeats in any row or column."),
-    version     = "1.4.4",
+    version     = "1.5.0",
 }

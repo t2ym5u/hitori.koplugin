@@ -19,6 +19,7 @@ local T               = require("ffi/util").template
 
 local ScreenBase         = require("screen_base")
 local MenuHelper         = require("menu_helper")
+local GenProgress        = require("gen_progress")
 local HitoriBoard        = lrequire("board")
 local HitoriBoardWidget  = lrequire("board_widget")
 
@@ -63,7 +64,8 @@ function HitoriScreen:init()
     local n     = self.plugin:getSetting("grid_n", 5)
     self.board  = HitoriBoard:new{ n = n }
     if not self.board:load(state) then
-        self.board:generate(self.plugin:getSetting("difficulty", "easy"))
+        local diff = self.plugin:getSetting("difficulty", "easy")
+        GenProgress.run(function(on_progress) self.board:generate(diff, on_progress) end)
     end
     self.last_check_result = nil
     ScreenBase.init(self)
@@ -172,7 +174,7 @@ function HitoriScreen:onNewGame()
     local diff = self.plugin:getSetting("difficulty", "easy")
     local n    = self.plugin:getSetting("grid_n", 5)
     self.board = HitoriBoard:new{ n = n }
-    self.board:generate(diff)
+    GenProgress.run(function(on_progress) self.board:generate(diff, on_progress) end)
     self.last_check_result = nil
     self.plugin:saveState(self.board:serialize())
     self:buildLayout()
