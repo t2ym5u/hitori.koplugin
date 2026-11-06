@@ -14,18 +14,11 @@ local STATE_WHITE_DOT = 2
 local DEFAULT_N          = 5
 local DEFAULT_DIFFICULTY = "easy"
 
-local DENSITY = { easy = 0.15, medium = 0.22, hard = 0.28 }
-
--- How far generation is allowed to escalate density before giving up on
--- proving uniqueness (see countSolutions below). Verified empirically: at
--- the nominal easy/medium densities a puzzle is essentially *never* unique
--- (0% in independent 60-trial samples at n=5/7), but success climbs
--- sharply once density crosses ~0.30 (75-90%+). Escalating is a deliberate
--- correctness-over-nominal-density tradeoff, same precedent as hidato/
--- numbrix's given-count drift (see docs/generator_robustness_audit.md).
-local MAX_DENSITY          = 0.5
-local DENSITY_STEP         = 0.04
-local ATTEMPTS_PER_DENSITY = 25
+-- Share of cells the black pattern aims for. A unique Hitori is dense by
+-- nature: any white cell that could be shaded without breaking a rule
+-- would give a second solution, so about 30% of the cells end up black at
+-- every level. What sets the levels apart is the reasoning (see LEVELS).
+local PATTERN_DENSITY = 0.34
 -- Search nodes per uniqueness check (running out counts as "not unique"):
 -- with propagation every candidate settles in under 25 nodes (measured on
 -- 1,500 7x7 checks), so this is only a safety cap.
@@ -403,6 +396,177 @@ local function countSolutions(puzzle, n, limit, node_budget)
 end
 
 -- ---------------------------------------------------------------------------
+-- Human-style solver (1.6.0), used to grade puzzles
+-- ---------------------------------------------------------------------------
+
+-- logicSolve(puzzle, n, max_tier) -> solved, t1_steps, t2_steps, rounds
+-- Solves the shading the way a person does, never by trial and error:
+--   tier 1, the basic rules a beginner applies at a glance:
+--     - a number with no twin left in its row and column stays white;
+--     - sandwich: in X Y X, the middle Y stays white (shading it would
+--       leave both X white);
+--     - pair: in A A side by side one A is white, so every other A of
+--       that line is black;
+--     - a black cell's neighbours are white;
+--     - a white cell blackens its twins in its row and column.
+--   tier 2, connectivity: an undecided cell whose shading would cut the
+--     white area in two stays white (this covers the corner and edge
+--     patterns).
+-- Tier 2 is only used when tier 1 is stuck, one cell at a time, so
+-- t2_steps counts how many times the solver needed connectivity to move
+-- on. Every rule only states what all solutions share (the first one
+-- holds for any unique puzzle: shading a cell with no twin would leave a
+-- second solution), so finishing means the puzzle needs no guessing; the
+-- generator still confirms uniqueness with countSolutions.
+local nbr_cache = {}
+local function neighbours(n)
+    local nbr = nbr_cache[n]
+    if nbr then return nbr end
+    nbr = {}
+    for r = 1, n do for c = 1, n do
+        local i = (r - 1) * n + c
+        local l = {}
+        if r > 1 then l[#l + 1] = i - n end
+        if r < n then l[#l + 1] = i + n end
+        if c > 1 then l[#l + 1] = i - 1 end
+        if c < n then l[#l + 1] = i + 1 end
+        nbr[i] = l
+    end end
+    nbr_cache[n] = nbr
+    return nbr
+end
+
+local ls_seen, ls_stack, ls_stamp = {}, {}, 0
+
+local function logicSolve(puzzle, n, max_tier)
+    local N = n * n
+    local nbr = neighbours(n)
+    local val, peers, state = {}, {}, {}
+    for r = 1, n do
+        local row = puzzle[r]
+        for c = 1, n do val[(r - 1) * n + c] = row[c] end
+    end
+    for r = 1, n do for c = 1, n do
+        local i = (r - 1) * n + c
+        local v, p = val[i], {}
+        for cc = 1, n do
+            local j = (r - 1) * n + cc
+            if cc ~= c and val[j] == v then p[#p + 1] = j end
+        end
+        for rr = 1, n do
+            local j = (rr - 1) * n + c
+            if rr ~= r and val[j] == v then p[#p + 1] = j end
+        end
+        peers[i] = p
+        state[i] = 0
+    end end
+
+    local bad, t1, t2, rounds = false, 0, 0, 0
+    local function set(i, v)
+        local s = state[i]
+        if s == v then return false end
+        if s ~= 0 then bad = true; return false end
+        state[i] = v
+        return true
+    end
+
+    -- the patterns read straight off the numbers
+    for r = 1, n do for c = 1, n do
+        local i, v = (r - 1) * n + c, val[(r - 1) * n + c]
+        if c + 2 <= n and v == val[i + 2] and set(i + 1, 2) then t1 = t1 + 1 end
+        if r + 2 <= n and v == val[i + 2 * n] and set(i + n, 2) then t1 = t1 + 1 end
+        if c + 1 <= n and v == val[i + 1] then
+            for cc = 1, n do
+                local j = (r - 1) * n + cc
+                if cc ~= c and cc ~= c + 1 and val[j] == v and set(j, 1) then t1 = t1 + 1 end
+            end
+        end
+        if r + 1 <= n and v == val[i + n] then
+            for rr = 1, n do
+                local j = (rr - 1) * n + c
+                if rr ~= r and rr ~= r + 1 and val[j] == v and set(j, 1) then t1 = t1 + 1 end
+            end
+        end
+    end end
+    if bad then return false, t1, t2, rounds end
+
+    -- would shading undecided cell x cut the non-black cells apart?
+    local seen, stack = ls_seen, ls_stack
+    local function cuts(x)
+        local start, total = nil, 0
+        for i = 1, N do
+            if i ~= x and state[i] ~= 1 then
+                total = total + 1
+                start = start or i
+            end
+        end
+        if not start then return false end
+        ls_stamp = ls_stamp + 1
+        local stamp = ls_stamp
+        seen[start] = stamp
+        stack[1] = start
+        local top, count = 1, 1
+        while top > 0 do
+            local i = stack[top]
+            top = top - 1
+            local l = nbr[i]
+            for k = 1, #l do
+                local j = l[k]
+                if j ~= x and state[j] ~= 1 and seen[j] ~= stamp then
+                    seen[j] = stamp
+                    count = count + 1
+                    top = top + 1
+                    stack[top] = j
+                end
+            end
+        end
+        return count ~= total
+    end
+
+    while true do
+        rounds = rounds + 1
+        local progress = false
+        for i = 1, N do
+            local s = state[i]
+            if s == 1 then
+                local l = nbr[i]
+                for k = 1, #l do
+                    if set(l[k], 2) then progress = true; t1 = t1 + 1 end
+                end
+            elseif s == 2 then
+                local p = peers[i]
+                for k = 1, #p do
+                    if set(p[k], 1) then progress = true; t1 = t1 + 1 end
+                end
+            else
+                local p, alone = peers[i], true
+                for k = 1, #p do
+                    if state[p[k]] ~= 1 then alone = false; break end
+                end
+                if alone and set(i, 2) then progress = true; t1 = t1 + 1 end
+            end
+        end
+        if bad then return false, t1, t2, rounds end
+        if not progress then
+            if max_tier < 2 then break end
+            for i = 1, N do
+                if state[i] == 0 and cuts(i) then
+                    set(i, 2)
+                    t2 = t2 + 1
+                    progress = true
+                    break
+                end
+            end
+            if not progress then break end
+        end
+    end
+    for i = 1, N do
+        if state[i] == 0 then return false, t1, t2, rounds end
+    end
+    return true, t1, t2, rounds
+end
+
+-- ---------------------------------------------------------------------------
 -- HitoriBoard
 -- ---------------------------------------------------------------------------
 
@@ -426,78 +590,138 @@ function HitoriBoard:new(opts)
     return obj
 end
 
--- Hitori has no "reveal a subset of cells" mechanic to dig -- every number
--- is visible from the start, and the puzzle to find is a *shading*. So
--- unlike the other Tier 2 fixes (dig cells one at a time from a fully
--- revealed state), this verifies whole candidate puzzles and retries: at
--- the nominal per-difficulty density a puzzle is essentially never unique
--- (0% in independent samples), but success climbs sharply once density
--- crosses ~0.30 (75-90%+) -- see the MAX_DENSITY/DENSITY_STEP comment
--- above. So this escalates density in bounded steps, trying several random
--- black-patterns + number-assignments per step, until one is proven
--- unique.
--- on_progress(fraction), optional: called after every uniqueness check
+-- What each level asks of the solver (see logicSolve), by grid size:
+-- t2_min/t2_max is how many times connectivity is needed.
+--   Easy:   the basic rules alone, from start to finish.
+--   Medium: connectivity a few times.
+--   Hard:   connectivity again and again.
+-- Never trial and error, at any level. Before 1.6.0 every level escalated
+-- density until the puzzle was unique, so all three looked the same
+-- (about 25% black) and up to 40% of them stalled a logical solver.
+local LEVELS = {
+    easy   = function(n) return { t2_min = 0, t2_max = 0 } end,
+    medium = function(n) return { t2_min = 1, t2_max = 2 } end,
+    hard   = function(n) return { t2_min = n >= 7 and 4 or 3, t2_max = math.huge } end,
+}
+HitoriBoard.LEVELS = LEVELS
+-- Work caps (counts, never the clock: a seed gives the same puzzle on every
+-- device, which the Daily Challenge relies on).
+HitoriBoard.MAX_PATTERNS  = 40    -- fresh black patterns
+HitoriBoard.CLIMB_STEPS   = 120   -- number tweaks per pattern
+HitoriBoard.MAX_EVALS     = 1200  -- solver runs per generate()
+
+-- How far a candidate is from the level: 0 = in range, larger = further;
+-- a candidate the solver can't finish is the furthest of all.
+local function distance(level, solved, t2)
+    if not solved then return 1000 end
+    if t2 < level.t2_min then return level.t2_min - t2 end
+    if t2 > level.t2_max then return t2 - level.t2_max end
+    return 0
+end
+
+-- Hitori shows every number from the start and the puzzle to find is a
+-- shading, so whole candidates are built and graded: a random black
+-- pattern (no two blacks touching, whites connected), white numbers with no
+-- repeat, and for each black cell a number repeating a white of its row or
+-- column. The black cells' numbers are what the solver's path depends on,
+-- so they are then tweaked one at a time, keeping a tweak when it brings
+-- the solver's work no further from the level's range (a hill climb). A
+-- candidate in range is kept once countSolutions proves it unique.
+-- The closest verified candidate is the fallback if none hits the range.
+-- on_progress(fraction), optional: called after every pattern
 -- (screen.lua wires it to the shared "Generating puzzle…" bar).
 function HitoriBoard:generate(difficulty, on_progress)
-    self.difficulty     = difficulty or self.difficulty
-    local checks = 0
+    self.difficulty      = difficulty or self.difficulty
     self.reveal_solution = false
     self.undo:clear()
 
     local n = self.n
-    local base_density = DENSITY[self.difficulty] or DENSITY.easy
+    local level = (LEVELS[self.difficulty] or LEVELS.easy)(n)
+    local evals = 0
+    local best_black, best_puzzle, best_dist
 
-    local best_black, best_puzzle
-    local density = base_density
-    while density <= MAX_DENSITY do
-        for _attempt = 1, ATTEMPTS_PER_DENSITY do
-            local black = generateBlackPattern(n, density)
-            local puzzle = emptyGrid(n)
-            if assignNumbers(black, n, puzzle) then
-                assignBlackNumbers(black, puzzle, n)
-                if not best_black then best_black, best_puzzle = black, puzzle end
-                local solutions, exhausted = countSolutions(puzzle, n, 2, UNIQUENESS_NODE_BUDGET)
-                checks = checks + 1
-                if on_progress then on_progress(checks / (checks + 40)) end
-                if not exhausted and solutions == 1 then
-                    self.puzzle         = puzzle
-                    self.solution_black = black
-                    self.user           = emptyGrid(n)
-                    self.wrong_marks    = emptyBoolGrid(n)
+    local function finish(black, puzzle)
+        self.puzzle         = puzzle
+        self.solution_black = black
+        self.user           = emptyGrid(n)
+        self.wrong_marks    = emptyBoolGrid(n)
+    end
+
+    -- the candidate counts only if the solver finishes it and it is unique
+    local function verified(puzzle)
+        local solutions, exhausted = countSolutions(puzzle, n, 2, UNIQUENESS_NODE_BUDGET)
+        return solutions == 1 and not exhausted
+    end
+
+    for pattern = 1, HitoriBoard.MAX_PATTERNS do
+        if evals >= HitoriBoard.MAX_EVALS and best_black then break end
+        local black = generateBlackPattern(n, PATTERN_DENSITY)
+        local puzzle = emptyGrid(n)
+        if assignNumbers(black, n, puzzle) then
+            assignBlackNumbers(black, puzzle, n)
+            -- each black cell's choices: the numbers of its row's and
+            -- column's white cells
+            local blacks = {}
+            for r = 1, n do for c = 1, n do
+                if black[r][c] then
+                    local opts, have = {}, {}
+                    for k = 1, n do
+                        local a = not black[r][k] and puzzle[r][k]
+                        if a and not have[a] then have[a] = true; opts[#opts + 1] = a end
+                        local b = not black[k][c] and puzzle[k][c]
+                        if b and not have[b] then have[b] = true; opts[#opts + 1] = b end
+                    end
+                    blacks[#blacks + 1] = { r, c, opts }
+                end
+            end end
+            local solved, _, t2 = logicSolve(puzzle, n, 2)
+            evals = evals + 1
+            local dist = distance(level, solved, t2)
+            for step = 0, HitoriBoard.CLIMB_STEPS do
+                if step > 0 then
+                    if #blacks == 0 then break end
+                    local b = blacks[math.random(#blacks)]
+                    local r, c, opts = b[1], b[2], b[3]
+                    local v, old = opts[math.random(#opts)], puzzle[b[1]][b[2]]
+                    if v ~= old then
+                        puzzle[r][c] = v
+                        local s2, _, x2 = logicSolve(puzzle, n, 2)
+                        evals = evals + 1
+                        local d2 = distance(level, s2, x2)
+                        if d2 <= dist then dist = d2 else puzzle[r][c] = old end
+                    end
+                end
+                if dist < 1000 and (not best_dist or dist < best_dist) and verified(puzzle) then
+                    best_dist, best_black, best_puzzle = dist, black, copyGrid(puzzle, n)
+                end
+                if dist == 0 and best_dist == 0 then
+                    finish(best_black, best_puzzle)
+                    if on_progress then on_progress(1) end
                     return
                 end
+                if evals >= HitoriBoard.MAX_EVALS and best_black then break end
             end
         end
-        density = density + DENSITY_STEP
+        if on_progress then on_progress(pattern / HitoriBoard.MAX_PATTERNS) end
     end
 
     if best_black then
-        -- Every attempt's uniqueness came back ambiguous/inconclusive
-        -- (should be rare given the density escalation above) -- prefer a
-        -- real, structurally valid puzzle over a degenerate fallback, same
-        -- precedent as sudokukiller/kakuro's graceful-degradation tiers.
-        self.puzzle         = best_puzzle
-        self.solution_black = best_black
-        self.user            = emptyGrid(n)
-        self.wrong_marks     = emptyBoolGrid(n)
+        -- nothing hit the level's range within the caps: the closest
+        -- candidate, still proven unique and solvable without guessing
+        finish(best_black, best_puzzle)
         return
     end
 
-    -- Fallback: no black cells at all, a cyclic Latin square so every row
-    -- and column is already free of duplicates (unlike a flat `c` for
-    -- every row, which would make every column constant and violate
-    -- Hitori's own rules) -- only reached if assignNumbers failed on every
-    -- single attempt above, which shouldn't happen in practice.
+    -- Unreachable in practice (measured: a verified candidate within the
+    -- first few patterns at every size and level): no black cells at all,
+    -- a cyclic Latin square, every number already alone in its lines.
     local puzzle = emptyGrid(n)
     for r = 1, n do
         for c = 1, n do
             puzzle[r][c] = ((c - 1 + r - 1) % n) + 1
         end
     end
-    self.puzzle         = puzzle
-    self.solution_black = emptyBoolGrid(n)
-    self.user           = emptyGrid(n)
-    self.wrong_marks    = emptyBoolGrid(n)
+    finish(emptyBoolGrid(n), puzzle)
 end
 
 -- ---------------------------------------------------------------------------
@@ -560,18 +784,23 @@ function HitoriBoard:checkProgress()
     end
 end
 
+-- Every cell decided, and the shading keeps the three rules. The puzzle
+-- has one solution, so this is the stored one; checking the rules rather
+-- than comparing with it means a valid grid is never refused.
 function HitoriBoard:isSolved()
     local n = self.n
+    local same = true
     for r = 1, n do
         for c = 1, n do
-            local u  = self.user[r][c]
-            local sb = self.solution_black[r][c]
+            local u = self.user[r][c]
             if u == STATE_UNKNOWN then return false end
-            if u == STATE_BLACK and not sb then return false end
-            if u == STATE_WHITE_DOT and sb then return false end
+            if (u == STATE_BLACK) ~= (self.solution_black[r][c] and true or false) then
+                same = false
+            end
         end
     end
-    return true
+    if same then return true end
+    return (self:validateRules())
 end
 
 function HitoriBoard:validateRules()
@@ -782,5 +1011,6 @@ HitoriBoard.STATE_WHITE_DOT = STATE_WHITE_DOT
 
 -- exposed for the specs
 HitoriBoard.countSolutions = countSolutions
+HitoriBoard.logicSolve     = logicSolve
 
 return HitoriBoard

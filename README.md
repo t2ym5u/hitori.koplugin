@@ -22,10 +22,10 @@ numbers. The goal is to blacken some cells so that:
 
 ## Features
 
-- **Multiple grid sizes** — 5×5, 7×7, 9×9
-- **Three difficulty levels** — Easy, Medium, Hard
+- **Two grid sizes** — 5×5, 7×7
+- **Three difficulty levels** — Easy needs only the basic rules, Medium also asks you to keep the white cells connected, Hard asks it again and again. Every puzzle has one solution and never needs guessing
+- **Duplicate highlighting** — undecided cells whose number still repeats in their row or column are shaded grey
 - **Cell states** — white (keep), black (eliminate), circled (confirmed keep)
-- **Constraint highlighting** — tap a number to highlight its duplicates
 - **Check** — verifies all three rules and highlights violations
 - **Hint** — two taps: the first says which cell is about to give, the second acts on it. A cell that contradicts the solution is always reported before a fresh one is revealed
 - **Reveal solution** — shows the full solution
