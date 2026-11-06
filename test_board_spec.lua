@@ -257,4 +257,111 @@ describe("HitoriBoard", function()
             assert.is_true(calls > 0)
         end)
     end)
+
+    describe("levels (1.6.0)", function()
+        local function grade(b)
+            local ok, _, t2 = Board.logicSolve(b.puzzle, b.n, 2)
+            return ok, t2
+        end
+
+        it("every level is solved without guessing, within its own range", function()
+            for _, n in ipairs({ 5, 7 }) do
+                local avg = {}
+                for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                    local level, sum, seeds = Board.LEVELS[diff](n), 0, 12
+                    for seed = 1, seeds do
+                        math.randomseed(seed * 104729 + n)
+                        local b = Board:new{ n = n }
+                        b:generate(diff)
+                        local solutions, exhausted = Board.countSolutions(b.puzzle, n, 2, 1e6)
+                        assert.is_false(exhausted)
+                        assert.are.equal(1, solutions)
+                        local ok, t2 = grade(b)
+                        assert.is_true(ok, ("n=%d %s seed=%d needs guessing"):format(n, diff, seed))
+                        assert.is_true(t2 >= level.t2_min and t2 <= level.t2_max,
+                            ("n=%d %s seed=%d: %d connectivity steps"):format(n, diff, seed, t2))
+                        -- Easy needs the basic rules only, the others connectivity
+                        assert.are.equal(diff == "easy", (Board.logicSolve(b.puzzle, n, 1)))
+                        sum = sum + t2
+                    end
+                    avg[diff] = sum / seeds
+                end
+                assert.is_true(avg.easy < avg.medium and avg.medium < avg.hard,
+                    ("n=%d: levels not distinct (%.1f %.1f %.1f)"):format(n, avg.easy, avg.medium, avg.hard))
+            end
+        end)
+
+        it("the solver never guesses", function()
+            -- a grid with no repeat is all white at once
+            assert.is_true((Board.logicSolve({ { 1, 2, 3 }, { 2, 3, 1 }, { 3, 1, 2 } }, 3, 1)))
+            -- 1 1 / 2 1 has one solution (shade the top-right 1), but only
+            -- "suppose it is white, then..." finds it: the solver stops
+            assert.are.equal(1, (Board.countSolutions({ { 1, 1 }, { 2, 1 } }, 2, 100, 1e6)))
+            assert.is_false((Board.logicSolve({ { 1, 1 }, { 2, 1 } }, 2, 2)))
+        end)
+
+        it("a seed always gives the same puzzle", function()
+            for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                math.randomseed(77)
+                local a = Board:new{ n = 7 }; a:generate(diff)
+                math.randomseed(77)
+                local b = Board:new{ n = 7 }; b:generate(diff)
+                assert.are.same(a.puzzle, b.puzzle)
+                assert.are.same(a.solution_black, b.solution_black)
+            end
+        end)
+
+        it("generation stays fast at every level", function()
+            for _, n in ipairs({ 5, 7 }) do
+                for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                    local worst = 0
+                    for seed = 1, 10 do
+                        math.randomseed(seed)
+                        local t0 = os.clock()
+                        Board:new{ n = n }:generate(diff)
+                        worst = math.max(worst, os.clock() - t0)
+                    end
+                    -- ~40 ms worst on a desktop (300 seeds); generous for CI
+                    assert.is_true(worst < 1.0, ("n=%d %s took %.2fs"):format(n, diff, worst))
+                end
+            end
+        end)
+
+        it("loads a 1.5.x save", function()
+            local old = {
+                n = 5, difficulty = "hard",
+                puzzle = { { 1, 1, 3, 4, 5 }, { 2, 3, 4, 5, 1 }, { 3, 4, 5, 1, 2 },
+                           { 4, 5, 1, 2, 3 }, { 5, 1, 2, 3, 4 } },
+                solution_black = { { true, false, false, false, false }, { false, false, false, false, false },
+                                   { false, false, false, false, false }, { false, false, false, false, false },
+                                   { false, false, false, false, false } },
+                user = { { 1, 2, 0, 0, 0 }, { 2, 0, 0, 0, 0 }, { 0, 0, 0, 0, 0 },
+                         { 0, 0, 0, 0, 0 }, { 0, 0, 0, 0, 0 } },
+                wrong_marks = {}, reveal_solution = false,
+            }
+            local b = Board:new{ n = 5 }
+            assert.is_true(b:load(old))
+            assert.are.equal("hard", b.difficulty)
+            assert.is_true(b.solution_black[1][1])
+            assert.are.equal(1, b.user[1][1])
+        end)
+
+        it("isSolved checks the rules on a full grid", function()
+            math.randomseed(5)
+            local b = Board:new{ n = 5 }
+            b:generate("medium")
+            for r = 1, 5 do for c = 1, 5 do
+                b.user[r][c] = b.solution_black[r][c] and B_BLACK or B_WHITE_DOT
+            end end
+            assert.is_true(b:isSolved())
+            -- un-shade one black: a repeat comes back, not solved
+            for r = 1, 5 do for c = 1, 5 do
+                if b.solution_black[r][c] then
+                    b.user[r][c] = B_WHITE_DOT
+                    assert.is_false(b:isSolved())
+                    return
+                end
+            end end
+        end)
+    end)
 end)

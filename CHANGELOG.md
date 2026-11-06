@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-11-05
+
+### Changed
+- The three levels are now really different. Before, every level raised
+  the number of black cells until the puzzle had one solution, so Easy,
+  Medium and Hard all looked the same, and up to 40% of puzzles could not
+  be finished by logic alone. Each puzzle is now graded by a solver that
+  reasons like a person and never guesses:
+  - Easy: the basic rules are enough (a lone number stays white, X Y X,
+    A A side by side, a black cell's neighbours, a white cell's twins);
+  - Medium: you also need to keep the white cells connected once or twice;
+  - Hard: connectivity is needed again and again (3+ times on 5×5,
+    4+ on 7×7).
+  No puzzle at any level needs trial and error.
+- The puzzle is checked against the rules when the grid is full, so any
+  shading that keeps them counts as solved.
+- Puzzles are new for the same seed, so the Daily Challenge changes once.
+
 ## [1.5.2] - 2026-11-04
 
 ### Fixed
